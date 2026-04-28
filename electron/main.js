@@ -99,37 +99,28 @@ ipcMain.handle('load-config', async (event) => {
 // IPC 处理 - 导出高度图 PNG
 ipcMain.handle('export-heightmap-png', async (event, imageData, width, height, filePath) => {
   try {
-    const { createCanvas, PNG } = require('canvas');
+    const { PNG } = require('pngjs');
     
-    // 创建 16 位灰度画布
-    const canvas = createCanvas(width, height);
-    const ctx = canvas.getContext('2d');
+    // 创建 16 位灰度 PNG
+    // imageData 包含 0-65535 的 16位无符号整数（Uint16Array）
     
-    // 创建 ImageData
-    const imgData = ctx.createImageData(width, height);
+    const png = new PNG({
+      width: width,
+      height: height,
+      colorType: 0, // 灰度
+      bitDepth: 16,  // 16位灰度
+      deflateLevel: 9
+    });
     
-    // 16位灰度需要转换为 8 位双通道，或者直接生成 16位
-    // 这里我们使用简单的方法：将 16位值分成高8位和低8位
-    // 对于 PNG，我们可以使用 alpha 通道来存储低 8 位，或者使用 16位模式
-    
-    // 简单方法：将 0-65535 的值缩放到 0-255 的灰度
-    // 更好的方法：使用 16 位模式
-    
+    // 填充图像数据
+    // 16位 PNG: 每个像素 2 字节 (高字节在前，大端序)
     for (let i = 0; i < imageData.length; i++) {
-      // imageData 包含 0-65535 的 16位值
       const value = imageData[i];
-      const pixelIndex = i * 4;
-      
-      // 缩放为 8 位灰度显示
-      const gray8 = Math.floor((value / 65535) * 255);
-      
-      imgData.data[pixelIndex] = gray8;     // R
-      imgData.data[pixelIndex + 1] = gray8; // G
-      imgData.data[pixelIndex + 2] = gray8; // B
-      imgData.data[pixelIndex + 3] = 255;   // A
+      // 16位值，大端序写入
+      const byteIdx = i * 2;
+      png.data[byteIdx] = (value >> 8) & 0xFF;   // 高字节
+      png.data[byteIdx + 1] = value & 0xFF;      // 低字节
     }
-    
-    ctx.putImageData(imgData, 0, 0);
     
     let savePath = filePath;
     if (!savePath) {
@@ -149,11 +140,12 @@ ipcMain.handle('export-heightmap-png', async (event, imageData, width, height, f
     }
     
     // 保存为 PNG
-    const buffer = canvas.toBuffer('image/png');
+    const buffer = PNG.sync.write(png);
     await fs.writeFile(savePath, buffer);
     
     return { success: true, path: savePath };
   } catch (error) {
+    console.error('PNG export error:', error);
     return { success: false, error: error.message };
   }
 });

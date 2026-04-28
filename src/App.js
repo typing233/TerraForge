@@ -172,17 +172,25 @@ const App = () => {
     }
   }, [hasTerrain, showNotification]);
   
-  const exportHeightmap = useCallback((format) => {
+  const exportHeightmap = useCallback(async (format) => {
     if (!engineRef.current || !hasTerrain) {
       showNotification('请先生成地形', 'warning');
       return;
     }
     
     try {
-      engineRef.current.exportHeightmap(format);
-      showNotification(`高度图导出成功 (${format.toUpperCase()} 格式)`);
+      const result = await engineRef.current.exportHeightmap(format);
+      if (result.success) {
+        if (result.path) {
+          showNotification(`高度图导出成功: ${result.path} (${format.toUpperCase()} 格式)`);
+        } else {
+          showNotification(`高度图导出成功 (${format.toUpperCase()} 格式)`);
+        }
+      }
     } catch (error) {
-      showNotification('导出失败: ' + error.message, 'error');
+      if (error.message !== '用户取消了导出') {
+        showNotification('导出失败: ' + error.message, 'error');
+      }
     }
   }, [hasTerrain, showNotification]);
   
