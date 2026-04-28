@@ -376,7 +376,7 @@ export class TerrainEngine {
   }
   
   // 导出高度图
-  exportHeightmap(format = 'png', options = {}) {
+  async exportHeightmap(format = 'png', options = {}) {
     if (!this.currentHeightmap) {
       throw new Error('没有可用的地形数据');
     }
@@ -400,22 +400,63 @@ export class TerrainEngine {
       maxValue: exportConfig.scaleToRange ? exportConfig.maxHeight : undefined
     };
     
-    if (format === 'raw') {
-      HeightmapExporter.downloadRAW(
+    // 检测是否在 Electron 环境中
+    const isElectron = window.electronAPI && window.electronAPI.isElectron;
+    
+    if (isElectron) {
+      // Electron 环境：通过 IPC 调用主进程导出
+      const uint16Data = HeightmapExporter.toUint16Array(
         exportHeightmap,
         this.currentWidth,
         this.currentHeight,
-        `heightmap_${this.currentWidth}x${this.currentHeight}.raw`,
         exportOptions
       );
+      
+      let result;
+      if (format === 'raw') {
+        // 对于 RAW，直接传递 Uint16Array（会被序列化为普通数组）
+        result = await window.electronAPI.exportHeightmapRAW(
+          Array.from(uint16Data),
+          this.currentWidth,
+          this.currentHeight
+        );
+      } else {
+        // 对于 PNG，传递 Uint16Array
+        result = await window.electronAPI.exportHeightmapPNG(
+          Array.from(uint16Data),
+          this.currentWidth,
+          this.currentHeight
+        );
+      }
+      
+      if (!result.success) {
+        if (result.canceled) {
+          throw new Error('用户取消了导出');
+        }
+        throw new Error(result.error || '导出失败');
+      }
+      
+      return result;
     } else {
-      HeightmapExporter.downloadPNG(
-        exportHeightmap,
-        this.currentWidth,
-        this.currentHeight,
-        `heightmap_${this.currentWidth}x${this.currentHeight}.png`,
-        exportOptions
-      );
+      // 浏览器环境：使用 Canvas 导出
+      if (format === 'raw') {
+        HeightmapExporter.downloadRAW(
+          exportHeightmap,
+          this.currentWidth,
+          this.currentHeight,
+          `heightmap_${this.currentWidth}x${this.currentHeight}.raw`,
+          exportOptions
+        );
+      } else {
+        HeightmapExporter.downloadPNG(
+          exportHeightmap,
+          this.currentWidth,
+          this.currentHeight,
+          `heightmap_${this.currentWidth}x${this.currentHeight}.png`,
+          exportOptions
+        );
+      }
+      return { success: true };
     }
   }
   
