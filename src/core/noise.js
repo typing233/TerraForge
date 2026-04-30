@@ -321,10 +321,10 @@ export class MultiNoiseGenerator {
         const tx = 1, ty = (hR - hL) / (2 * stepX), tz = 0;
         const bx = 0, by = (hU - hD) / (2 * stepZ), bz = 1;
         
-        // 叉积求法线
-        let nx = ty * bz - tz * by;
-        let ny = tz * bx - tx * bz;
-        let nz = tx * by - ty * bx;
+        // 叉积求法线：b × t 确保法线朝上
+        let nx = by * tz - bz * ty;
+        let ny = bz * tx - bx * tz;
+        let nz = bx * ty - by * tx;
         
         // 归一化
         const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;

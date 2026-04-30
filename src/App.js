@@ -9,6 +9,7 @@ import './App.css';
 const App = () => {
   const viewportRef = useRef(null);
   const engineRef = useRef(null);
+  const notificationTimerRef = useRef(null);
   
   const [leftPanelTab, setLeftPanelTab] = useState('noise');
   const [rightPanelTab, setRightPanelTab] = useState('export');
@@ -48,6 +49,9 @@ const App = () => {
     
     return () => {
       clearTimeout(timer);
+      if (notificationTimerRef.current) {
+        clearTimeout(notificationTimerRef.current);
+      }
       if (engineRef.current) {
         engineRef.current.dispose();
       }
@@ -55,8 +59,14 @@ const App = () => {
   }, []);
   
   const showNotification = useCallback((message, type = 'success') => {
+    if (notificationTimerRef.current) {
+      clearTimeout(notificationTimerRef.current);
+    }
     setNotification({ message, type });
-    setTimeout(() => setNotification(null), 3000);
+    notificationTimerRef.current = setTimeout(() => {
+      setNotification(null);
+      notificationTimerRef.current = null;
+    }, 3000);
   }, []);
   
   const updateConfig = useCallback((updates) => {
@@ -115,6 +125,10 @@ const App = () => {
     
     setIsGenerating(true);
     setTimeout(() => {
+      if (!engineRef.current) {
+        setIsGenerating(false);
+        return;
+      }
       try {
         engineRef.current.generateTerrain();
         setHasTerrain(true);
@@ -133,6 +147,10 @@ const App = () => {
     
     setIsGenerating(true);
     setTimeout(() => {
+      if (!engineRef.current) {
+        setIsGenerating(false);
+        return;
+      }
       try {
         engineRef.current.applyHydraulicErosion(50000);
         showNotification('水力侵蚀应用成功！');
@@ -149,6 +167,10 @@ const App = () => {
     
     setIsGenerating(true);
     setTimeout(() => {
+      if (!engineRef.current) {
+        setIsGenerating(false);
+        return;
+      }
       try {
         engineRef.current.applyThermalErosion();
         showNotification('热力侵蚀应用成功！');
