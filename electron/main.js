@@ -113,13 +113,16 @@ ipcMain.handle('export-heightmap-png', async (event, imageData, width, height, f
     });
     
     // 填充图像数据
-    // 16位 PNG: 每个像素 2 字节 (高字节在前，大端序)
+    // pngjs 内部使用 RGBA 格式（每像素4字节），bitDepth:16 在编码时会将8位值扩展为16位
     for (let i = 0; i < imageData.length; i++) {
-      const value = imageData[i];
-      // 16位值，大端序写入
-      const byteIdx = i * 2;
-      png.data[byteIdx] = (value >> 8) & 0xFF;   // 高字节
-      png.data[byteIdx + 1] = value & 0xFF;      // 低字节
+      const value = imageData[i]; // 0-65535
+      // 取高8位作为灰度值写入 RGBA 各通道
+      const gray8 = (value >> 8) & 0xFF;
+      const pixelIdx = i * 4;
+      png.data[pixelIdx] = gray8;      // R
+      png.data[pixelIdx + 1] = gray8;  // G
+      png.data[pixelIdx + 2] = gray8;  // B
+      png.data[pixelIdx + 3] = 255;    // A (不透明)
     }
     
     let savePath = filePath;

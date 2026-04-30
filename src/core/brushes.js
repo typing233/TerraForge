@@ -85,10 +85,11 @@ export class BrushSystem {
         return 1 - falloffT;
       case FalloffType.QUADRATIC:
         return 1 - falloffT * falloffT;
-      case FalloffType.SMOOTH:
+      case FalloffType.SMOOTH: {
         // 平滑插值：3t² - 2t³
         const s = 1 - falloffT;
         return s * s * (3 - 2 * s);
+      }
       default:
         return 1;
     }

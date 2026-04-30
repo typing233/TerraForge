@@ -26,6 +26,7 @@ export class TerrainRenderer {
     
     this.waterPlane = null;
     this.waterMesh = null;
+    this.waterMaterial = null;
     
     this.vegetationGroup = null;
     this.vegetationMeshes = [];
@@ -89,8 +90,9 @@ export class TerrainRenderer {
     gridHelper.position.y = -0.5;
     this.scene.add(gridHelper);
     
-    // 窗口大小调整监听
-    window.addEventListener('resize', this.onResize.bind(this));
+    // 保存绑定的 resize 处理器引用，以便在 dispose 时正确移除
+    this._onResize = this.onResize.bind(this);
+    window.addEventListener('resize', this._onResize);
     
     // 开始渲染循环
     this.animate();
@@ -257,6 +259,9 @@ export class TerrainRenderer {
       if (this.waterPlane) {
         this.waterPlane.dispose();
       }
+      if (this.waterMaterial) {
+        this.waterMaterial.dispose();
+      }
     }
     
     const waterHeight = waterLevel * heightScale;
@@ -266,7 +271,7 @@ export class TerrainRenderer {
     this.waterPlane.rotateX(-Math.PI / 2);
     
     // 水面材质
-    const waterMaterial = new THREE.MeshPhysicalMaterial({
+    this.waterMaterial = new THREE.MeshPhysicalMaterial({
       color: 0x4a90d9,
       transparent: true,
       opacity: 0.7,
@@ -276,7 +281,7 @@ export class TerrainRenderer {
       clearcoatRoughness: 0.2
     });
     
-    this.waterMesh = new THREE.Mesh(this.waterPlane, waterMaterial);
+    this.waterMesh = new THREE.Mesh(this.waterPlane, this.waterMaterial);
     this.waterMesh.position.y = waterHeight;
     this.waterMesh.receiveShadow = true;
     
@@ -391,9 +396,11 @@ export class TerrainRenderer {
   
   // 清除植被
   clearVegetation() {
+    const disposedGeometries = new Set();
     for (const mesh of this.vegetationMeshes) {
       this.vegetationGroup.remove(mesh);
-      if (mesh.geometry) {
+      if (mesh.geometry && !disposedGeometries.has(mesh.geometry)) {
+        disposedGeometries.add(mesh.geometry);
         mesh.geometry.dispose();
       }
       if (mesh.material) {
@@ -439,7 +446,6 @@ export class TerrainRenderer {
     if (this.terrainMesh && this.terrainGeometry) {
       // 简单方式：在指定位置查找高度
       const raycaster = new THREE.Raycaster();
-      const pointer = new THREE.Vector2();
       
       // 从上方发射射线
       raycaster.set(new THREE.Vector3(worldX, 200, worldZ), new THREE.Vector3(0, -1, 0));
@@ -516,7 +522,9 @@ export class TerrainRenderer {
       cancelAnimationFrame(this.animationId);
     }
     
-    window.removeEventListener('resize', this.onResize.bind(this));
+    if (this._onResize) {
+      window.removeEventListener('resize', this._onResize);
+    }
     
     this.clearVegetation();
     
@@ -526,6 +534,35 @@ export class TerrainRenderer {
     
     if (this.waterPlane) {
       this.waterPlane.dispose();
+    }
+    
+    if (this.waterMaterial) {
+      this.waterMaterial.dispose();
+    }
+    
+    if (this.terrainMaterial) {
+      this.terrainMaterial.dispose();
+    }
+    
+    if (this.wireframeMaterial) {
+      this.wireframeMaterial.dispose();
+    }
+    
+    if (this.normalMaterial) {
+      this.normalMaterial.dispose();
+    }
+    
+    if (this.heatmapMaterial) {
+      this.heatmapMaterial.dispose();
+    }
+    
+    if (this.brushIndicator) {
+      if (this.brushIndicator.geometry) {
+        this.brushIndicator.geometry.dispose();
+      }
+      if (this.brushIndicator.material) {
+        this.brushIndicator.material.dispose();
+      }
     }
     
     if (this.renderer) {

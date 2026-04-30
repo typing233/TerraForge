@@ -67,9 +67,6 @@ export class HydraulicErosion {
     let water = 1;
     let sediment = 0;
     
-    const cellSizeX = width;
-    const cellSizeY = height;
-    
     for (let step = 0; step < this.maxSteps; step++) {
       const cellX = Math.floor(posX);
       const cellY = Math.floor(posY);
