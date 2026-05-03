@@ -4,6 +4,9 @@ import { NoiseLayerConfig, NoiseType } from './core/noise';
 import { BrushType, FalloffType } from './core/brushes';
 import { RenderMode } from './core/terrainRenderer';
 import TerrainConfig from './core/terrainConfig';
+import { BiomeType } from './core/biomeSystem';
+import { PathType } from './core/cameraPath';
+import { TimePreset } from './core/lightTimeline';
 import './App.css';
 
 const App = () => {
@@ -26,6 +29,31 @@ const App = () => {
   
   const [notification, setNotification] = useState(null);
   const [isEngineReady, setIsEngineReady] = useState(false);
+  
+  // ============ AI 地形生成状态 ============
+  const [assistantMessages, setAssistantMessages] = useState([]);
+  const [assistantInput, setAssistantInput] = useState('');
+  const [isAssistantThinking, setIsAssistantThinking] = useState(false);
+  
+  // ============ 群系画布状态 ============
+  const [selectedBiome, setSelectedBiome] = useState(BiomeType.GRASSLAND);
+  const [biomeBrushRadius, setBiomeBrushRadius] = useState(10);
+  const [biomeBrushStrength, setBiomeBrushStrength] = useState(0.8);
+  const [biomeBlendRadius, setBiomeBlendRadius] = useState(5);
+  
+  // ============ 相机路径状态 ============
+  const [pathType, setPathType] = useState(PathType.AUTOMATIC);
+  const [isPathPlaying, setIsPathPlaying] = useState(false);
+  const [pathProgress, setPathProgress] = useState(0);
+  const [pathKeyframeCount, setPathKeyframeCount] = useState(0);
+  
+  // ============ 光照时间轴状态 ============
+  const [lightPreset, setLightPreset] = useState(TimePreset.NOON);
+  const [isTimelinePlaying, setIsTimelinePlaying] = useState(false);
+  const [timelineProgress, setTimelineProgress] = useState(0.25);
+  const [timelineSpeed, setTimelineSpeed] = useState(1);
+  
+  const [currentEditMode, setCurrentEditMode] = useState('height');
   
   useEffect(() => {
     const initEngine = () => {
@@ -355,6 +383,239 @@ const App = () => {
     [NoiseType.SIMPLEX]: 'Simplex'
   };
   
+  const biomeInfo = {
+    [BiomeType.OCEAN]: { name: '海洋', icon: '🌊', color: '#1a5276' },
+    [BiomeType.BEACH]: { name: '海滩', icon: '🏖️', color: '#f4d03f' },
+    [BiomeType.DESERT]: { name: '沙漠', icon: '🏜️', color: '#f5cba7' },
+    [BiomeType.SAVANNA]: { name: '稀树草原', icon: '🦒', color: '#d4ac0d' },
+    [BiomeType.GRASSLAND]: { name: '草原', icon: '🌾', color: '#7dcea0' },
+    [BiomeType.FOREST]: { name: '森林', icon: '🌲', color: '#27ae60' },
+    [BiomeType.SWAMP]: { name: '沼泽', icon: '🐊', color: '#1e8449' },
+    [BiomeType.ROCKY]: { name: '岩石', icon: '🪨', color: '#808080' },
+    [BiomeType.SNOW]: { name: '雪地', icon: '❄️', color: '#ecf0f1' },
+    [BiomeType.TUNDRA]: { name: '苔原', icon: '🏔️', color: '#aed6f1' },
+    [BiomeType.VOLCANIC]: { name: '火山', icon: '🌋', color: '#e74c3c' }
+  };
+  
+  const pathTypeNames = {
+    [PathType.AUTOMATIC]: '自动（特征点）',
+    [PathType.CIRCULAR]: '环形',
+    [PathType.SPIRAL]: '螺旋',
+    [PathType.ORBIT]: '环绕'
+  };
+  
+  const lightPresetInfo = {
+    [TimePreset.SUNRISE]: { name: '日出', icon: '🌅' },
+    [TimePreset.NOON]: { name: '正午', icon: '☀️' },
+    [TimePreset.SUNSET]: { name: '日落', icon: '🌇' },
+    [TimePreset.NIGHT]: { name: '星空', icon: '🌙' }
+  };
+  
+  // ============ AI 地形生成处理函数 ============
+  const sendAssistantMessage = useCallback(async () => {
+    if (!engineRef.current || !assistantInput.trim() || isAssistantThinking) return;
+    
+    const userMessage = assistantInput.trim();
+    setAssistantInput('');
+    setIsAssistantThinking(true);
+    
+    setAssistantMessages(prev => [...prev, {
+      role: 'user',
+      content: userMessage,
+      timestamp: Date.now()
+    }]);
+    
+    try {
+      const result = await engineRef.current.sendAssistantMessage(userMessage);
+      
+      setAssistantMessages(prev => [...prev, {
+        role: 'assistant',
+        content: result.content,
+        action: result.action,
+        terrainParams: result.terrainParams,
+        modifications: result.modifications,
+        timestamp: Date.now()
+      }]);
+      
+      if (result.action === 'generate' && result.terrainParams) {
+        engineRef.current.applyAssistantParams(result.terrainParams);
+        setTimeout(() => {
+          if (engineRef.current) {
+            engineRef.current.generateTerrain();
+            setHasTerrain(true);
+            setVegetationCount(0);
+            showNotification('AI 生成的地形已应用！');
+          }
+        }, 100);
+      } else if (result.action === 'modify' && result.modifications) {
+        showNotification('AI 建议的修改：' + result.modifications.map(m => m.description).join(', '));
+      }
+      
+    } catch (error) {
+      setAssistantMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '抱歉，处理您的请求时出错：' + error.message,
+        timestamp: Date.now()
+      }]);
+    } finally {
+      setIsAssistantThinking(false);
+    }
+  }, [assistantInput, isAssistantThinking, showNotification]);
+  
+  const clearAssistantHistory = useCallback(() => {
+    setAssistantMessages([]);
+    if (engineRef.current) {
+      engineRef.current.clearAssistantHistory();
+    }
+  }, []);
+  
+  // ============ 群系画布处理函数 ============
+  const updateBiomeBrush = useCallback(() => {
+    if (!engineRef.current) return;
+    
+    const biomeSystem = engineRef.current.getBiomeSystem();
+    if (biomeSystem) {
+      biomeSystem.setBrushConfig({
+        biomeType: selectedBiome,
+        radius: biomeBrushRadius,
+        strength: biomeBrushStrength,
+        blendRadius: biomeBlendRadius,
+        blendMode: 'smooth'
+      });
+    }
+  }, [selectedBiome, biomeBrushRadius, biomeBrushStrength, biomeBlendRadius]);
+  
+  const handleEditModeChange = useCallback((mode) => {
+    setCurrentEditMode(mode);
+    if (engineRef.current) {
+      engineRef.current.setEditMode(mode);
+    }
+    if (mode === 'biome') {
+      updateBiomeBrush();
+    }
+  }, [updateBiomeBrush]);
+  
+  const fillTerrainWithBiome = useCallback((biomeType) => {
+    if (!engineRef.current) return;
+    engineRef.current.fillBiome(biomeType);
+    setSelectedBiome(biomeType);
+    showNotification(`已填充 ${biomeInfo[biomeType]?.name || biomeType}`);
+  }, [showNotification]);
+  
+  const exportBiomeTexture = useCallback(() => {
+    if (!engineRef.current) return;
+    
+    const result = engineRef.current.exportBiomeTexture();
+    if (result) {
+      const link = document.createElement('a');
+      link.download = 'biome_texture.png';
+      link.href = result;
+      link.click();
+      showNotification('群系贴图已导出！');
+    }
+  }, [showNotification]);
+  
+  // ============ 相机路径处理函数 ============
+  const generateCameraPath = useCallback((type) => {
+    if (!engineRef.current || !hasTerrain) {
+      showNotification('请先生成地形', 'warning');
+      return;
+    }
+    
+    try {
+      const result = engineRef.current.generateCameraPath(type || pathType);
+      if (result.success) {
+        setPathKeyframeCount(result.keyframeCount);
+        showNotification(`路径生成成功！${result.keyframeCount} 个关键帧`);
+      } else {
+        showNotification('路径生成失败: ' + result.error, 'error');
+      }
+    } catch (error) {
+      showNotification('路径生成失败: ' + error.message, 'error');
+    }
+  }, [pathType, hasTerrain, showNotification]);
+  
+  const togglePathPlay = useCallback(() => {
+    if (!engineRef.current) return;
+    
+    if (isPathPlaying) {
+      engineRef.current.pausePath();
+      setIsPathPlaying(false);
+    } else {
+      const success = engineRef.current.playPath();
+      setIsPathPlaying(success);
+      if (!success) {
+        showNotification('请先生成相机路径', 'warning');
+      }
+    }
+  }, [isPathPlaying, showNotification]);
+  
+  const stopCameraPath = useCallback(() => {
+    if (engineRef.current) {
+      engineRef.current.stopPath();
+      setIsPathPlaying(false);
+      setPathProgress(0);
+    }
+  }, []);
+  
+  const exportKeyframes = useCallback(() => {
+    if (!engineRef.current) return;
+    
+    const json = engineRef.current.exportPathKeyframes();
+    if (json) {
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.download = 'camera_path.json';
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+      showNotification('相机关键帧已导出！');
+    }
+  }, [showNotification]);
+  
+  // ============ 光照时间轴处理函数 ============
+  const applyLightPreset = useCallback((preset) => {
+    if (!engineRef.current) return;
+    
+    engineRef.current.setLightPreset(preset);
+    setLightPreset(preset);
+    
+    const timeline = engineRef.current.getLightTimeline();
+    if (timeline) {
+      const total = timeline.getTotalDuration();
+      let time = 0;
+      switch (preset) {
+        case TimePreset.SUNRISE: time = total * 0.15; break;
+        case TimePreset.NOON: time = total * 0.25; break;
+        case TimePreset.SUNSET: time = total * 0.85; break;
+        case TimePreset.NIGHT: time = total * 0.5; break;
+      }
+      setTimelineProgress(time / total);
+    }
+  }, []);
+  
+  const toggleTimelinePlay = useCallback(() => {
+    if (!engineRef.current) return;
+    
+    if (isTimelinePlaying) {
+      engineRef.current.pauseLightTimeline();
+      setIsTimelinePlaying(false);
+    } else {
+      engineRef.current.setLightTimelineSpeed(timelineSpeed);
+      engineRef.current.playLightTimeline();
+      setIsTimelinePlaying(true);
+    }
+  }, [isTimelinePlaying, timelineSpeed]);
+  
+  const stopLightTimeline = useCallback(() => {
+    if (engineRef.current) {
+      engineRef.current.stopLightTimeline();
+      setIsTimelinePlaying(false);
+      setTimelineProgress(0.25);
+    }
+  }, []);
+  
   return (
     <div className="app-container">
       {!isEngineReady && (
@@ -404,10 +665,16 @@ const App = () => {
               笔刷编辑
             </div>
             <div 
-              className={`panel-tab ${leftPanelTab === 'erosion' ? 'active' : ''}`}
-              onClick={() => setLeftPanelTab('erosion')}
+              className={`panel-tab ${leftPanelTab === 'biome' ? 'active' : ''}`}
+              onClick={() => setLeftPanelTab('biome')}
             >
-              侵蚀效果
+              群系画布
+            </div>
+            <div 
+              className={`panel-tab ${leftPanelTab === 'camera' ? 'active' : ''}`}
+              onClick={() => setLeftPanelTab('camera')}
+            >
+              相机路径
             </div>
           </div>
 
@@ -915,6 +1182,254 @@ const App = () => {
                 </div>
               </div>
             )}
+            
+            {leftPanelTab === 'biome' && (
+              <div>
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">编辑模式</span>
+                  </div>
+                  <div className="mode-selector">
+                    <div
+                      className={`mode-btn ${currentEditMode === 'height' ? 'active' : ''}`}
+                      onClick={() => handleEditModeChange('height')}
+                    >
+                      <span>🔺</span>
+                      <span>高度编辑</span>
+                    </div>
+                    <div
+                      className={`mode-btn ${currentEditMode === 'biome' ? 'active' : ''}`}
+                      onClick={() => handleEditModeChange('biome')}
+                    >
+                      <span>🎨</span>
+                      <span>群系绘画</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="divider"></div>
+
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">群系选择</span>
+                  </div>
+                  <div className="biome-grid">
+                    {Object.entries(biomeInfo).map(([type, info]) => (
+                      <div
+                        key={type}
+                        className={`biome-btn ${selectedBiome === type ? 'active' : ''}`}
+                        onClick={() => {
+                          setSelectedBiome(type);
+                          updateBiomeBrush();
+                        }}
+                        title={info.name}
+                      >
+                        <span className="biome-icon">{info.icon}</span>
+                        <span className="biome-name">{info.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="divider"></div>
+
+                {currentEditMode === 'biome' && (
+                  <>
+                    <div className="section">
+                      <div className="section-header">
+                        <span className="section-title">笔刷参数</span>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">笔刷半径: {biomeBrushRadius}</label>
+                        <div className="slider-container">
+                          <input
+                            type="range"
+                            className="slider"
+                            min={1}
+                            max={50}
+                            step={1}
+                            value={biomeBrushRadius}
+                            onChange={(e) => {
+                              setBiomeBrushRadius(Number(e.target.value));
+                              updateBiomeBrush();
+                            }}
+                          />
+                          <span className="slider-value">{biomeBrushRadius}</span>
+                        </div>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">笔刷强度: {formatNumber(biomeBrushStrength)}</label>
+                        <div className="slider-container">
+                          <input
+                            type="range"
+                            className="slider"
+                            min={0.1}
+                            max={1}
+                            step={0.05}
+                            value={biomeBrushStrength}
+                            onChange={(e) => {
+                              setBiomeBrushStrength(Number(e.target.value));
+                              updateBiomeBrush();
+                            }}
+                          />
+                          <span className="slider-value">{formatNumber(biomeBrushStrength)}</span>
+                        </div>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">渐变半径: {biomeBlendRadius}</label>
+                        <div className="slider-container">
+                          <input
+                            type="range"
+                            className="slider"
+                            min={0}
+                            max={20}
+                            step={1}
+                            value={biomeBlendRadius}
+                            onChange={(e) => {
+                              setBiomeBlendRadius(Number(e.target.value));
+                              updateBiomeBrush();
+                            }}
+                          />
+                          <span className="slider-value">{biomeBlendRadius}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="divider"></div>
+                  </>
+                )}
+
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">快捷操作</span>
+                  </div>
+                  <div className="btn-group">
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => fillTerrainWithBiome(selectedBiome)}
+                      disabled={!hasTerrain}
+                    >
+                      🪣 填充地形
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={exportBiomeTexture}
+                      disabled={!hasTerrain}
+                    >
+                      🖼️ 导出贴图
+                    </button>
+                  </div>
+                </div>
+
+                <div className="help-text">
+                  💡 提示：选择"群系绘画"模式后，可以在地形上点击拖动来绘制群系。渐变半径控制群系之间的过渡平滑度。
+                </div>
+              </div>
+            )}
+            
+            {leftPanelTab === 'camera' && (
+              <div>
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">路径类型</span>
+                  </div>
+                  <div className="path-type-grid">
+                    {Object.entries(pathTypeNames).map(([type, name]) => (
+                      <div
+                        key={type}
+                        className={`path-type-btn ${pathType === type ? 'active' : ''}`}
+                        onClick={() => setPathType(type)}
+                      >
+                        <span>{name}</span>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  <button
+                    className="btn btn-primary btn-full"
+                    onClick={() => generateCameraPath(pathType)}
+                    disabled={!hasTerrain}
+                    style={{ marginTop: 16 }}
+                  >
+                    🚀 生成路径
+                  </button>
+                  
+                  {pathKeyframeCount > 0 && (
+                    <div className="info-box" style={{ marginTop: 12 }}>
+                      已生成 {pathKeyframeCount} 个关键帧
+                    </div>
+                  )}
+                </div>
+
+                <div className="divider"></div>
+
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">播放控制</span>
+                  </div>
+                  <div className="playback-controls">
+                    <button
+                      className={`play-btn ${isPathPlaying ? 'playing' : ''}`}
+                      onClick={togglePathPlay}
+                      disabled={pathKeyframeCount === 0}
+                    >
+                      {isPathPlaying ? '⏸️' : '▶️'}
+                    </button>
+                    <button
+                      className="play-btn"
+                      onClick={stopCameraPath}
+                      disabled={pathKeyframeCount === 0}
+                    >
+                      ⏹️
+                    </button>
+                  </div>
+                  
+                  {pathKeyframeCount > 0 && (
+                    <div className="form-group" style={{ marginTop: 12 }}>
+                      <label className="form-label">进度</label>
+                      <div className="slider-container">
+                        <input
+                          type="range"
+                          className="slider"
+                          min={0}
+                          max={100}
+                          value={pathProgress * 100}
+                          onChange={(e) => {
+                            const progress = Number(e.target.value) / 100;
+                            setPathProgress(progress);
+                            if (engineRef.current) {
+                              engineRef.current.seekPath(progress * engineRef.current.getCurrentPath()?.getTotalDuration() || 0);
+                            }
+                          }}
+                        />
+                        <span className="slider-value">{Math.round(pathProgress * 100)}%</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="divider"></div>
+
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">导出选项</span>
+                  </div>
+                  <div className="btn-group">
+                    <button
+                      className="btn btn-secondary"
+                      onClick={exportKeyframes}
+                      disabled={pathKeyframeCount === 0}
+                    >
+                      📋 导出 JSON
+                    </button>
+                  </div>
+                </div>
+
+                <div className="help-text">
+                  💡 提示：选择路径类型后点击"生成路径"，系统会根据地形特征自动规划飞行路线。"自动（特征点）"模式会检测山峰、山谷等特征点来生成路径。
+                </div>
+              </div>
+            )}
           </div>
         </aside>
 
@@ -981,6 +1496,12 @@ const App = () => {
         <aside className="right-panel">
           <div className="panel-tabs">
             <div 
+              className={`panel-tab ${rightPanelTab === 'lighting' ? 'active' : ''}`}
+              onClick={() => setRightPanelTab('lighting')}
+            >
+              光照
+            </div>
+            <div 
               className={`panel-tab ${rightPanelTab === 'vegetation' ? 'active' : ''}`}
               onClick={() => setRightPanelTab('vegetation')}
             >
@@ -1001,6 +1522,107 @@ const App = () => {
           </div>
 
           <div className="panel-content">
+            {rightPanelTab === 'lighting' && (
+              <div>
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">光照预设</span>
+                  </div>
+                  <div className="lighting-presets">
+                    {Object.entries(lightPresetInfo).map(([preset, info]) => (
+                      <div
+                        key={preset}
+                        className={`lighting-preset-btn ${lightPreset === preset ? 'active' : ''}`}
+                        onClick={() => applyLightPreset(preset)}
+                      >
+                        <span className="lighting-icon">{info.icon}</span>
+                        <span className="lighting-name">{info.name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="divider"></div>
+
+                <div className="section">
+                  <div className="section-header">
+                    <span className="section-title">时间轴控制</span>
+                  </div>
+                  <div className="timeline-controls">
+                    <button
+                      className={`play-btn ${isTimelinePlaying ? 'playing' : ''}`}
+                      onClick={toggleTimelinePlay}
+                    >
+                      {isTimelinePlaying ? '⏸️' : '▶️'}
+                    </button>
+                    <button
+                      className="play-btn"
+                      onClick={stopLightTimeline}
+                    >
+                      ⏹️
+                    </button>
+                  </div>
+                  
+                  <div className="form-group" style={{ marginTop: 12 }}>
+                    <label className="form-label">时间进度</label>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        className="slider"
+                        min={0}
+                        max={100}
+                        value={timelineProgress * 100}
+                        onChange={(e) => {
+                          const progress = Number(e.target.value) / 100;
+                          setTimelineProgress(progress);
+                          if (engineRef.current) {
+                            const timeline = engineRef.current.getLightTimeline();
+                            if (timeline) {
+                              engineRef.current.seekLightTimeline(progress * timeline.getTotalDuration());
+                            }
+                          }
+                        }}
+                      />
+                      <span className="slider-value">{Math.round(timelineProgress * 100)}%</span>
+                    </div>
+                    <div className="help-text">
+                      {timelineProgress < 0.2 && '🌅 日出时分'}
+                      {timelineProgress >= 0.2 && timelineProgress < 0.35 && '☀️ 上午'}
+                      {timelineProgress >= 0.35 && timelineProgress < 0.6 && '🌤️ 正午'}
+                      {timelineProgress >= 0.6 && timelineProgress < 0.85 && '🌇 傍晚'}
+                      {timelineProgress >= 0.85 && '🌙 夜晚'}
+                    </div>
+                  </div>
+                  
+                  <div className="form-group">
+                    <label className="form-label">播放速度: {formatNumber(timelineSpeed)}x</label>
+                    <div className="slider-container">
+                      <input
+                        type="range"
+                        className="slider"
+                        min={0.1}
+                        max={5}
+                        step={0.1}
+                        value={timelineSpeed}
+                        onChange={(e) => {
+                          const speed = Number(e.target.value);
+                          setTimelineSpeed(speed);
+                          if (engineRef.current) {
+                            engineRef.current.setLightTimelineSpeed(speed);
+                          }
+                        }}
+                      />
+                      <span className="slider-value">{formatNumber(timelineSpeed)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="help-text">
+                  💡 提示：点击光照预设快速切换环境氛围，或使用时间轴播放日夜循环动画。时间轴会自动调整太阳位置、天空颜色和光照强度。
+                </div>
+              </div>
+            )}
+            
             {rightPanelTab === 'vegetation' && (
               <div>
                 <div className="section">
@@ -1157,59 +1779,52 @@ const App = () => {
             )}
 
             {rightPanelTab === 'llm' && (
-              <div>
+              <div className="assistant-panel">
                 <div className="section">
                   <div className="section-header">
-                    <span className="section-title">AI 助手配置</span>
-                    <div 
-                      className={`section-toggle ${config.llmConfig.enabled ? 'active' : ''}`}
-                      onClick={() => updateConfig({ 
-                        llmConfig: { ...config.llmConfig, enabled: !config.llmConfig.enabled } 
-                      })}
-                    ></div>
+                    <span className="section-title">LLM 配置</span>
                   </div>
-
-                  {config.llmConfig.enabled && (
-                    <div className="llm-config">
-                      <div className="form-group">
-                        <label className="form-label">API Base URL</label>
-                        <input 
-                          type="text" 
-                          className="form-input"
-                          placeholder="例如: https://api.openai.com/v1"
-                          value={config.llmConfig.baseUrl}
-                          onChange={(e) => updateConfig({ 
-                            llmConfig: { ...config.llmConfig, baseUrl: e.target.value } 
-                          })}
-                        />
-                        <div className="help-text">
-                          OpenAI 兼容的 API 端点地址
-                        </div>
+                  <div className="llm-config">
+                    <div className="form-group">
+                      <label className="form-label">API Base URL</label>
+                      <input 
+                        type="text" 
+                        className="form-input"
+                        placeholder="例如: https://api.openai.com/v1"
+                        value={config.llmConfig.baseUrl}
+                        onChange={(e) => updateConfig({ 
+                          llmConfig: { ...config.llmConfig, baseUrl: e.target.value } 
+                        })}
+                      />
+                      <div className="help-text">
+                        OpenAI 兼容的 API 端点地址
                       </div>
-                      <div className="form-group">
-                        <label className="form-label">API Key</label>
-                        <input 
-                          type="password" 
-                          className="form-input"
-                          placeholder="输入您的 API 密钥"
-                          value={config.llmConfig.apiKey}
-                          onChange={(e) => updateConfig({ 
-                            llmConfig: { ...config.llmConfig, apiKey: e.target.value } 
-                          })}
-                        />
-                      </div>
-                      <div className="form-group">
-                        <label className="form-label">模型名称</label>
-                        <input 
-                          type="text" 
-                          className="form-input"
-                          placeholder="例如: gpt-4, claude-3-opus"
-                          value={config.llmConfig.modelName}
-                          onChange={(e) => updateConfig({ 
-                            llmConfig: { ...config.llmConfig, modelName: e.target.value } 
-                          })}
-                        />
-                      </div>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">API Key</label>
+                      <input 
+                        type="password" 
+                        className="form-input"
+                        placeholder="输入您的 API 密钥"
+                        value={config.llmConfig.apiKey}
+                        onChange={(e) => updateConfig({ 
+                          llmConfig: { ...config.llmConfig, apiKey: e.target.value } 
+                        })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">模型名称</label>
+                      <input 
+                        type="text" 
+                        className="form-input"
+                        placeholder="例如: gpt-4, claude-3-opus"
+                        value={config.llmConfig.modelName}
+                        onChange={(e) => updateConfig({ 
+                          llmConfig: { ...config.llmConfig, modelName: e.target.value } 
+                        })}
+                      />
+                    </div>
+                    <div className="llm-status-row">
                       <div className={`llm-status ${llmStatus === '已连接' ? 'connected' : 'disconnected'}`}>
                         <span className={`status-dot ${llmStatus !== '已连接' && llmStatus !== '未配置' ? 'warning' : ''}`}></span>
                         状态: {llmStatus}
@@ -1217,71 +1832,125 @@ const App = () => {
                       <button 
                         className="btn btn-secondary btn-small"
                         onClick={testLLMConnection}
-                        style={{ marginTop: 8 }}
                       >
                         测试连接
                       </button>
                     </div>
-                  )}
+                  </div>
                 </div>
-
-                {config.llmConfig.enabled && config.llmConfig.baseUrl && (
-                  <>
-                    <div className="divider"></div>
-
-                    <div className="section">
-                      <div className="section-header">
-                        <span className="section-title">智能建议</span>
-                      </div>
-                      <button 
-                        className="btn btn-secondary btn-full"
-                        onClick={getLLMSuggestions}
-                      >
-                        🤖 获取地形优化建议
-                      </button>
-
-                      {llmSuggestion && (
-                        <div 
-                          style={{ 
-                            marginTop: 12, 
-                            padding: 12, 
-                            background: 'var(--bg-tertiary)', 
-                            borderRadius: 6,
-                            fontSize: 12,
-                            lineHeight: 1.6,
-                            whiteSpace: 'pre-wrap'
-                          }}
-                        >
-                          {llmSuggestion}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
 
                 <div className="divider"></div>
 
                 <div className="section">
                   <div className="section-header">
-                    <span className="section-title">使用说明</span>
+                    <span className="section-title">AI 地形生成</span>
+                    <button 
+                      className="btn btn-secondary btn-small"
+                      onClick={clearAssistantHistory}
+                    >
+                      清空对话
+                    </button>
                   </div>
-                  <div className="help-text">
-                    <p style={{ marginBottom: 8 }}>
-                      <strong>配置说明：</strong>
-                    </p>
-                    <p style={{ marginBottom: 8 }}>
-                      - API Base URL: OpenAI 兼容的 API 端点，如 https://api.openai.com/v1
-                    </p>
-                    <p style={{ marginBottom: 8 }}>
-                      - API Key: 您的 API 密钥
-                    </p>
-                    <p style={{ marginBottom: 8 }}>
-                      - 模型名称: 要使用的模型，如 gpt-4, claude-3 等
-                    </p>
-                    <p>
-                      配置完成后点击"测试连接"验证，然后可以获取地形优化建议。
-                    </p>
+                  
+                  <div className="chat-container">
+                    <div className="chat-messages" ref={(el) => {
+                      if (el) {
+                        el.scrollTop = el.scrollHeight;
+                      }
+                    }}>
+                      {assistantMessages.length === 0 ? (
+                        <div className="chat-empty">
+                          <div className="chat-empty-icon">🤖</div>
+                          <div className="chat-empty-title">AI 地形助手</div>
+                          <div className="chat-empty-tips">
+                            <p>💡 尝试输入以下方式描述：</p>
+                            <p>• "创建一个有火山和湖泊的山地地形"</p>
+                            <p>• "生成一个适合滑雪场"</p>
+                            <p>• "把火山口再深一点"</p>
+                            <p>• "增加更多的河流和峡谷"</p>
+                          </div>
+                        </div>
+                      ) : (
+                        assistantMessages.map((msg, index) => (
+                          <div 
+                            key={index}
+                            className={`chat-message ${msg.role}`}
+                          >
+                            <div className="chat-message-role">
+                              {msg.role === 'user' ? '👤' : '🤖'}
+                            </div>
+                            <div className="chat-message-content">
+                              <div className="chat-message-text">{msg.content}</div>
+                              
+                              {msg.role === 'assistant' && msg.terrainParams && (
+                                <div className="chat-params-preview">
+                                  <div className="chat-params-title">📋 生成参数</div>
+                                  <pre className="chat-params-json">
+                                    {JSON.stringify(msg.terrainParams, null, 2)}
+                                  </pre>
+                                </div>
+                              )}
+                              
+                              {msg.role === 'assistant' && msg.modifications && msg.modifications.length > 0 && (
+                                <div className="chat-modifications">
+                                  <div className="chat-modifications-title">🔧 修改建议</div>
+                                  {msg.modifications.map((mod, idx) => (
+                                    <div key={idx} className="chat-modification-item">
+                                      • {mod.description}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                      
+                      {isAssistantThinking && (
+                        <div className="chat-message assistant">
+                          <div className="chat-message-role">🤖</div>
+                          <div className="chat-message-content">
+                            <div className="chat-typing">
+                              <span className="typing-dot"></span>
+                              <span className="typing-dot"></span>
+                              <span className="typing-dot"></span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="chat-input-area">
+                      <input
+                        type="text"
+                        className="chat-input"
+                        placeholder="描述您想要的地形..."
+                        value={assistantInput}
+                        onChange={(e) => setAssistantInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            sendAssistantMessage();
+                          }
+                        }}
+                        disabled={isAssistantThinking}
+                      />
+                      <button
+                        className="btn btn-primary chat-send-btn"
+                        onClick={sendAssistantMessage}
+                        disabled={isAssistantThinking || !assistantInput.trim()}
+                      >
+                        发送
+                      </button>
+                    </div>
                   </div>
+                </div>
+
+                <div className="help-text">
+                  <p><strong>使用提示：</strong></p>
+                  <p>• 描述地形外观：山脉、平原、峡谷、火山、高原、盆地等</p>
+                  <p>• 描述地形特征：陡峭、平缓、圆润、尖锐等</p>
+                  <p>• 多轮对话：先生成地形，再要求"火山口再深一点"等增量修改</p>
                 </div>
               </div>
             )}

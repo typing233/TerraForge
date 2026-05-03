@@ -8,7 +8,8 @@ export const RenderMode = {
   WIREFRAME: 'wireframe',
   NORMALS: 'normals',
   HEATMAP: 'heatmap',
-  COMBINED: 'combined'
+  COMBINED: 'combined',
+  BIOME: 'biome'
 };
 
 // 地形渲染器
@@ -23,6 +24,7 @@ export class TerrainRenderer {
     this.terrainMesh = null;
     this.terrainGeometry = null;
     this.terrainMaterial = null;
+    this.biomeMaterial = null;
     
     this.waterPlane = null;
     this.waterMesh = null;
@@ -34,8 +36,14 @@ export class TerrainRenderer {
     this.brushIndicator = null;
     this.brushVisible = false;
     
+    this.ambientLight = null;
+    this.sunLight = null;
+    this.hemiLight = null;
+    
     this.renderMode = RenderMode.SOLID;
     this.animationId = null;
+    
+    this.useBiomeColors = false;
     
     this.init();
   }
@@ -100,26 +108,206 @@ export class TerrainRenderer {
   
   setupLights() {
     // 环境光
-    const ambientLight = new THREE.AmbientLight(0x404060, 0.5);
-    this.scene.add(ambientLight);
+    this.ambientLight = new THREE.AmbientLight(0x404060, 0.5);
+    this.scene.add(this.ambientLight);
     
     // 主方向光（太阳）
-    const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
-    sunLight.position.set(50, 100, 50);
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
-    sunLight.shadow.camera.near = 0.5;
-    sunLight.shadow.camera.far = 500;
-    sunLight.shadow.camera.left = -100;
-    sunLight.shadow.camera.right = 100;
-    sunLight.shadow.camera.top = 100;
-    sunLight.shadow.camera.bottom = -100;
-    this.scene.add(sunLight);
+    this.sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    this.sunLight.position.set(50, 100, 50);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.width = 2048;
+    this.sunLight.shadow.mapSize.height = 2048;
+    this.sunLight.shadow.camera.near = 0.5;
+    this.sunLight.shadow.camera.far = 500;
+    this.sunLight.shadow.camera.left = -100;
+    this.sunLight.shadow.camera.right = 100;
+    this.sunLight.shadow.camera.top = 100;
+    this.sunLight.shadow.camera.bottom = -100;
+    this.scene.add(this.sunLight);
     
     // 半球光
-    const hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x3d5c3d, 0.4);
-    this.scene.add(hemiLight);
+    this.hemiLight = new THREE.HemisphereLight(0x87CEEB, 0x3d5c3d, 0.4);
+    this.scene.add(this.hemiLight);
+  }
+  
+  // ============ 动态光照方法 ============
+  
+  updateLighting(lightState) {
+    if (!lightState) return;
+    
+    if (this.ambientLight && lightState.ambientColor !== undefined) {
+      this.ambientLight.color.set(lightState.ambientColor);
+      if (lightState.ambientIntensity !== undefined) {
+        this.ambientLight.intensity = lightState.ambientIntensity;
+      }
+    }
+    
+    if (this.sunLight) {
+      if (lightState.sunColor !== undefined) {
+        this.sunLight.color.set(lightState.sunColor);
+      }
+      if (lightState.sunIntensity !== undefined) {
+        this.sunLight.intensity = lightState.sunIntensity;
+      }
+      if (lightState.sunPosition !== undefined) {
+        const pos = lightState.sunPosition;
+        this.sunLight.position.set(pos.x, pos.y, pos.z);
+      }
+    }
+    
+    if (this.hemiLight) {
+      if (lightState.skyColor !== undefined) {
+        this.hemiLight.color.set(lightState.skyColor);
+      }
+      if (lightState.groundColor !== undefined) {
+        this.hemiLight.groundColor.set(lightState.groundColor);
+      }
+      if (lightState.hemiIntensity !== undefined) {
+        this.hemiLight.intensity = lightState.hemiIntensity;
+      }
+    }
+    
+    if (lightState.skyColor !== undefined && this.scene) {
+      this.scene.background.set(lightState.skyColor);
+      if (this.scene.fog) {
+        this.scene.fog.color.set(lightState.skyColor);
+      }
+    }
+  }
+  
+  // ============ 群系颜色渲染方法 ============
+  
+  createBiomeShaderMaterial() {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        biomeTexture: { value: null },
+        textureSize: { value: 256 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D biomeTexture;
+        uniform float textureSize;
+        varying vec2 vUv;
+        
+        void main() {
+          vec4 biomeColor = texture2D(biomeTexture, vUv);
+          gl_FragColor = biomeColor;
+        }
+      `
+    });
+    return material;
+  }
+  
+  updateTerrainColors(biomeSystem) {
+    if (!biomeSystem || !this.terrainMesh) return;
+    
+    const canvas = biomeSystem.getCanvas();
+    if (!canvas) return;
+    
+    const biomeTexture = new THREE.CanvasTexture(canvas);
+    biomeTexture.needsUpdate = true;
+    
+    if (!this.biomeMaterial) {
+      this.biomeMaterial = new THREE.MeshStandardMaterial({
+        map: biomeTexture,
+        roughness: 0.9,
+        metalness: 0.0
+      });
+    } else {
+      this.biomeMaterial.map = biomeTexture;
+      this.biomeMaterial.needsUpdate = true;
+    }
+    
+    this.useBiomeColors = true;
+    
+    if (this.renderMode === RenderMode.SOLID || this.renderMode === RenderMode.BIOME) {
+      this.terrainMesh.material = this.biomeMaterial;
+      this.terrainMesh.material.needsUpdate = true;
+    }
+  }
+  
+  // ============ 相机路径方法 ============
+  
+  updateCameraFromKeyframe(keyframe) {
+    if (!keyframe || !this.camera) return;
+    
+    if (keyframe.position) {
+      this.camera.position.set(
+        keyframe.position.x,
+        keyframe.position.y,
+        keyframe.position.z
+      );
+    }
+    
+    if (keyframe.target) {
+      this.controls.target.set(
+        keyframe.target.x,
+        keyframe.target.y,
+        keyframe.target.z
+      );
+      this.controls.update();
+    }
+    
+    if (keyframe.rotation) {
+      this.camera.rotation.set(
+        keyframe.rotation.x,
+        keyframe.rotation.y,
+        keyframe.rotation.z
+      );
+    }
+    
+    if (keyframe.fov !== undefined && this.camera.isPerspectiveCamera) {
+      this.camera.fov = keyframe.fov;
+      this.camera.updateProjectionMatrix();
+    }
+  }
+  
+  getCameraState() {
+    if (!this.camera) return null;
+    return {
+      position: {
+        x: this.camera.position.x,
+        y: this.camera.position.y,
+        z: this.camera.position.z
+      },
+      target: {
+        x: this.controls.target.x,
+        y: this.controls.target.y,
+        z: this.controls.target.z
+      },
+      fov: this.camera.isPerspectiveCamera ? this.camera.fov : 45
+    };
+  }
+  
+  // ============ 其他辅助方法 ============
+  
+  getCanvas() {
+    return this.renderer ? this.renderer.domElement : null;
+  }
+  
+  captureScreenshot() {
+    const canvas = this.getCanvas();
+    if (!canvas) return null;
+    return canvas.toDataURL('image/png');
+  }
+  
+  setCameraPosition(x, y, z) {
+    if (this.camera) {
+      this.camera.position.set(x, y, z);
+    }
+  }
+  
+  setCameraTarget(x, y, z) {
+    if (this.controls) {
+      this.controls.target.set(x, y, z);
+      this.controls.update();
+    }
   }
   
   createMaterials() {
