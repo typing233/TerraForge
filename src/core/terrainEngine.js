@@ -5,6 +5,10 @@ import VegetationSystem, { VegetationConfig, VegetationType } from './vegetation
 import TerrainRenderer, { RenderMode } from './terrainRenderer';
 import TerrainConfig, { HeightmapExporter, ExportConfig } from './terrainConfig';
 import LLMService, { LLMConfig } from './llmService';
+import TerrainAssistant from './terrainAssistant';
+import BiomeSystem, { BiomeType, BiomeConfig, BiomeBrushConfig } from './biomeSystem';
+import { CameraPath, PathGenerator, PathType, PathKeyframe } from './cameraPath';
+import { LightTimeline, LightState, TimePreset, getPresetLightStates, createDayNightCycle } from './lightTimeline';
 
 export class TerrainEngine {
   constructor(container) {
@@ -18,21 +22,50 @@ export class TerrainEngine {
     this.vegetationSystem = new VegetationSystem();
     this.llmService = new LLMService();
     
+    // 新系统
+    this.terrainAssistant = new TerrainAssistant(this.llmService);
+    this.biomeSystem = new BiomeSystem();
+    this.currentPath = null;
+    this.pathGenerator = null;
+    this.lightTimeline = createDayNightCycle(30);
+    this.isPathPlaying = false;
+    this.isTimelinePlaying = false;
+    
     // 当前地形数据
     this.currentHeightmap = null;
     this.currentMeshData = null;
     this.currentWidth = 0;
     this.currentHeight = 0;
     
+    // 模式切换
+    this.currentEditMode = 'height';
+    
     // 回调
     this.onTerrainChanged = null;
     this.onBrushActive = null;
     this.onVegetationGenerated = null;
+    this.onPathUpdated = null;
+    this.onLightUpdated = null;
+    this.onAssistantResponse = null;
     
     // 初始化渲染器
     if (container) {
       this.initRenderer(container);
     }
+    
+    // 设置光照时间轴回调
+    this.initLightTimelineCallback();
+  }
+  
+  initLightTimelineCallback() {
+    this.lightTimeline.setUpdateCallback((state, time) => {
+      if (this.renderer) {
+        this.renderer.updateLighting(state);
+      }
+      if (this.onLightUpdated) {
+        this.onLightUpdated(state, time);
+      }
+    });
   }
   
   initRenderer(container) {
@@ -552,8 +585,432 @@ export class TerrainEngine {
     return this.llmService.parseNaturalLanguage(description);
   }
   
+  // ============ TerrainAssistant 相关方法 ============
+  
+  async sendAssistantMessage(message) {
+    if (!this.currentHeightmap) {
+      const defaultState = {
+        gridWidth: this.config.gridWidth,
+        gridHeight: this.config.gridHeight,
+        noiseLayers: this.config.noiseLayers,
+        waterEnabled: this.config.waterEnabled,
+        waterLevel: this.config.waterLevel,
+        hydraulicEnabled: this.config.hydraulicEnabled,
+        thermalEnabled: this.config.thermalEnabled
+      };
+      this.terrainAssistant.setTerrainState(defaultState);
+    } else {
+      const state = {
+        gridWidth: this.currentWidth,
+        gridHeight: this.currentHeight,
+        noiseLayers: this.config.noiseLayers,
+        waterEnabled: this.config.waterEnabled,
+        waterLevel: this.config.waterLevel,
+        hydraulicEnabled: this.config.hydraulicEnabled,
+        thermalEnabled: this.config.thermalEnabled
+      };
+      this.terrainAssistant.setTerrainState(state);
+    }
+    
+    const result = await this.terrainAssistant.sendMessage(message);
+    
+    if (this.onAssistantResponse) {
+      this.onAssistantResponse(result);
+    }
+    
+    return result;
+  }
+  
+  getAssistantHistory() {
+    return this.terrainAssistant.getHistory();
+  }
+  
+  clearAssistantHistory() {
+    this.terrainAssistant.clearHistory();
+  }
+  
+  applyAssistantParams(terrainParams) {
+    if (!terrainParams) return false;
+    
+    if (terrainParams.gridWidth !== undefined) {
+      this.config.gridWidth = terrainParams.gridWidth;
+    }
+    if (terrainParams.gridHeight !== undefined) {
+      this.config.gridHeight = terrainParams.gridHeight;
+    }
+    if (terrainParams.terrainScale !== undefined) {
+      this.config.terrainScale = terrainParams.terrainScale;
+    }
+    if (terrainParams.heightScale !== undefined) {
+      this.config.heightScale = terrainParams.heightScale;
+    }
+    if (terrainParams.seed !== undefined) {
+      this.config.seed = terrainParams.seed;
+    }
+    if (terrainParams.waterEnabled !== undefined) {
+      this.config.waterEnabled = terrainParams.waterEnabled;
+    }
+    if (terrainParams.waterLevel !== undefined) {
+      this.config.waterLevel = terrainParams.waterLevel;
+    }
+    if (terrainParams.hydraulicEnabled !== undefined) {
+      this.config.hydraulicEnabled = terrainParams.hydraulicEnabled;
+    }
+    if (terrainParams.thermalEnabled !== undefined) {
+      this.config.thermalEnabled = terrainParams.thermalEnabled;
+    }
+    if (terrainParams.noiseLayers !== undefined && terrainParams.noiseLayers.length > 0) {
+      this.config.noiseLayers = terrainParams.noiseLayers;
+    }
+    
+    return true;
+  }
+  
+  // ============ BiomeSystem 相关方法 ============
+  
+  initBiomeSystem() {
+    if (this.currentWidth > 0 && this.currentHeight > 0) {
+      this.biomeSystem.init(this.currentWidth, this.currentHeight);
+    }
+  }
+  
+  getBiomeSystem() {
+    return this.biomeSystem;
+  }
+  
+  getBiomes() {
+    return this.biomeSystem.getBiomes();
+  }
+  
+  setEditMode(mode) {
+    this.currentEditMode = mode;
+  }
+  
+  getEditMode() {
+    return this.currentEditMode;
+  }
+  
+  applyBiomeBrush(worldX, worldZ, isStart = false) {
+    if (!this.currentHeightmap) return;
+    
+    const width = this.currentWidth;
+    const height = this.currentHeight;
+    const scale = this.config.terrainScale;
+    
+    const hx = ((worldX / scale) + 0.5) * (width - 1);
+    const hy = ((worldZ / scale) + 0.5) * (height - 1);
+    
+    if (!this.biomeSystem.getCanvas()) {
+      this.biomeSystem.init(width, height);
+    }
+    
+    this.biomeSystem.applyBrush(hx, hy);
+    
+    this.updateTerrainColors();
+  }
+  
+  updateTerrainColors() {
+    if (!this.renderer || !this.biomeSystem.getCanvas()) return;
+    this.renderer.updateTerrainColors(this.biomeSystem);
+  }
+  
+  exportBiomeTexture() {
+    return this.biomeSystem.exportBiomeTexture();
+  }
+  
+  exportBiomeIdTexture() {
+    return this.biomeSystem.exportBiomeIdTexture();
+  }
+  
+  fillBiome(biomeType) {
+    if (!this.biomeSystem.getCanvas()) {
+      this.biomeSystem.init(this.currentWidth, this.currentHeight);
+    }
+    this.biomeSystem.fillWithBiome(biomeType);
+    this.updateTerrainColors();
+  }
+  
+  // ============ CameraPath 相关方法 ============
+  
+  initPathGenerator() {
+    if (this.currentHeightmap) {
+      this.pathGenerator = new PathGenerator(
+        this.currentHeightmap,
+        this.currentWidth,
+        this.currentHeight,
+        this.config.terrainScale,
+        this.config.heightScale
+      );
+    }
+  }
+  
+  generateCameraPath(pathType, options = {}) {
+    if (!this.currentHeightmap) {
+      return { success: false, error: '请先生成地形' };
+    }
+    
+    if (!this.pathGenerator) {
+      this.initPathGenerator();
+    }
+    
+    try {
+      let path;
+      switch (pathType) {
+        case PathType.CIRCULAR:
+          path = this.pathGenerator.generateCircularPath(
+            options.centerX || 0,
+            options.centerZ || 0,
+            options.radius || 80,
+            options.heightOffset || 30,
+            options.numPoints || 30
+          );
+          break;
+          
+        case PathType.SPIRAL:
+          path = this.pathGenerator.generateSpiralPath(
+            options.centerX || 0,
+            options.centerZ || 0,
+            options.startRadius || 100,
+            options.endRadius || 20,
+            options.startHeight || 60,
+            options.endHeight || 20,
+            options.rotations || 3,
+            options.numPoints || 50
+          );
+          break;
+          
+        case PathType.ORBIT:
+          path = this.pathGenerator.generateOrbitPath(
+            options.centerX || 0,
+            options.centerZ || 0,
+            options.radius || 80,
+            options.minHeight || 25,
+            options.maxHeight || 60,
+            options.numPoints || 40
+          );
+          break;
+          
+        case PathType.AUTOMATIC:
+        default:
+          path = this.pathGenerator.generatePathFromFeatures(
+            options.maxKeyframes || 15
+          );
+      }
+      
+      this.currentPath = path;
+      
+      return {
+        success: true,
+        path: path,
+        keyframeCount: path.getKeyframeCount()
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+  
+  getCurrentPath() {
+    return this.currentPath;
+  }
+  
+  setCurrentPath(path) {
+    this.currentPath = path instanceof CameraPath ? path : CameraPath.fromJSON(path);
+  }
+  
+  playPath() {
+    if (!this.currentPath || this.currentPath.getKeyframeCount() < 2) {
+      return false;
+    }
+    
+    this.isPathPlaying = true;
+    this._playPathLoop();
+    
+    return true;
+  }
+  
+  _playPathLoop() {
+    if (!this.isPathPlaying || !this.currentPath) return;
+    
+    const totalDuration = this.currentPath.getTotalDuration();
+    const now = performance.now();
+    
+    if (!this._lastPathTime) {
+      this._lastPathTime = now;
+    }
+    
+    const delta = (now - this._lastPathTime) / 1000;
+    this._lastPathTime = now;
+    
+    if (!this._pathTime) this._pathTime = 0;
+    this._pathTime += delta * (this.currentPath.speed || 1);
+    
+    if (this._pathTime >= totalDuration) {
+      if (this.currentPath.loop) {
+        this._pathTime = 0;
+      } else {
+        this.isPathPlaying = false;
+        this._pathTime = totalDuration;
+      }
+    }
+    
+    const keyframe = this.currentPath.evaluate(this._pathTime);
+    
+    if (this.renderer && keyframe) {
+      this.renderer.updateCameraFromKeyframe(keyframe);
+    }
+    
+    if (this.onPathUpdated) {
+      this.onPathUpdated(keyframe, this._pathTime, totalDuration);
+    }
+    
+    if (this.isPathPlaying) {
+      requestAnimationFrame(() => this._playPathLoop());
+    }
+  }
+  
+  pausePath() {
+    this.isPathPlaying = false;
+    this._lastPathTime = null;
+  }
+  
+  stopPath() {
+    this.isPathPlaying = false;
+    this._pathTime = 0;
+    this._lastPathTime = null;
+  }
+  
+  seekPath(time) {
+    if (!this.currentPath) return;
+    this._pathTime = time;
+    const keyframe = this.currentPath.evaluate(time);
+    if (this.renderer && keyframe) {
+      this.renderer.updateCameraFromKeyframe(keyframe);
+    }
+    return keyframe;
+  }
+  
+  exportPathKeyframes() {
+    if (!this.currentPath) return null;
+    return JSON.stringify(this.currentPath.toJSON(), null, 2);
+  }
+  
+  // ============ LightTimeline 相关方法 ============
+  
+  getLightTimeline() {
+    return this.lightTimeline;
+  }
+  
+  setLightPreset(preset) {
+    const presets = getPresetLightStates();
+    const state = presets[preset];
+    
+    if (state && this.renderer) {
+      this.renderer.updateLighting(state);
+    }
+    
+    return state;
+  }
+  
+  playLightTimeline() {
+    this.isTimelinePlaying = true;
+    this.lightTimeline.play();
+  }
+  
+  pauseLightTimeline() {
+    this.isTimelinePlaying = false;
+    this.lightTimeline.pause();
+  }
+  
+  stopLightTimeline() {
+    this.isTimelinePlaying = false;
+    this.lightTimeline.stop();
+  }
+  
+  seekLightTimeline(time) {
+    return this.lightTimeline.seek(time);
+  }
+  
+  setLightTimelineSpeed(speed) {
+    this.lightTimeline.speed = speed;
+  }
+  
+  // ============ 导出功能 ============
+  
+  async exportPathVideo(options = {}) {
+    if (!this.currentPath || !this.renderer) {
+      return { success: false, error: '没有可用的相机路径' };
+    }
+    
+    const frames = [];
+    const frameCount = options.frameCount || 60;
+    const totalDuration = this.currentPath.getTotalDuration();
+    
+    for (let i = 0; i < frameCount; i++) {
+      const time = (i / frameCount) * totalDuration;
+      const keyframe = this.currentPath.evaluate(time);
+      
+      if (this.renderer && keyframe) {
+        this.renderer.updateCameraFromKeyframe(keyframe);
+      }
+      
+      if (this.renderer) {
+        const canvas = this.renderer.getCanvas();
+        if (canvas) {
+          frames.push(canvas.toDataURL('image/png'));
+        }
+      }
+    }
+    
+    return {
+      success: true,
+      frames: frames,
+      frameCount: frames.length
+    };
+  }
+  
+  exportSequenceFrames(options = {}) {
+    if (!this.currentPath || !this.renderer) {
+      return { success: false, error: '没有可用的相机路径' };
+    }
+    
+    const frameCount = options.frameCount || 60;
+    const totalDuration = this.currentPath.getTotalDuration();
+    const frames = [];
+    
+    for (let i = 0; i < frameCount; i++) {
+      const time = (i / frameCount) * totalDuration;
+      const keyframe = this.currentPath.evaluate(time);
+      
+      if (this.renderer && keyframe) {
+        this.renderer.updateCameraFromKeyframe(keyframe);
+      }
+      
+      const canvas = this.renderer.getCanvas();
+      if (canvas) {
+        frames.push({
+          index: i,
+          time: time,
+          dataUrl: canvas.toDataURL('image/png'),
+          keyframe: keyframe.toJSON()
+        });
+      }
+    }
+    
+    return {
+      success: true,
+      frames: frames,
+      frameCount: frames.length
+    };
+  }
+  
   // 销毁
   dispose() {
+    this.stopPath();
+    this.stopLightTimeline();
+    
     if (this.renderer) {
       this.renderer.dispose();
       this.renderer = null;
