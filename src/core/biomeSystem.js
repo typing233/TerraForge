@@ -561,6 +561,20 @@ export class BiomeCanvas {
     };
   }
   
+  toCanvasElement(biomeConfigs, blendEnabled = true) {
+    const canvas = document.createElement('canvas');
+    canvas.width = this.width;
+    canvas.height = this.height;
+    const ctx = canvas.getContext('2d');
+    
+    const colorData = this.generateColorMap(biomeConfigs, blendEnabled);
+    const imageData = ctx.createImageData(this.width, this.height);
+    imageData.data.set(colorData);
+    ctx.putImageData(imageData, 0, 0);
+    
+    return canvas;
+  }
+  
   static fromJSON(json) {
     const canvas = new BiomeCanvas(json.width, json.height);
     canvas.biomeMap = new Int8Array(json.biomeMap);
@@ -616,6 +630,11 @@ export class BiomeSystem {
   
   getCanvas() {
     return this.canvas;
+  }
+  
+  getColorCanvas() {
+    if (!this.canvas) return null;
+    return this.canvas.toCanvasElement(this.biomes, this.blendEnabled);
   }
   
   setBrushConfig(config) {

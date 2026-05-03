@@ -31,6 +31,9 @@ export class TerrainEngine {
     this.isPathPlaying = false;
     this.isTimelinePlaying = false;
     
+    this.syncLightingWithPath = true;
+    this.pathLightingSyncMode = 'progress';
+    
     // 当前地形数据
     this.currentHeightmap = null;
     this.currentMeshData = null;
@@ -862,6 +865,19 @@ export class TerrainEngine {
       this.renderer.updateCameraFromKeyframe(keyframe);
     }
     
+    if (this.syncLightingWithPath && this.lightTimeline) {
+      const progress = this._pathTime / totalDuration;
+      const lightState = this.lightTimeline.evaluateAtProgress(progress);
+      
+      if (this.renderer && lightState) {
+        this.renderer.updateLighting(lightState);
+      }
+      
+      if (this.onLightUpdated) {
+        this.onLightUpdated(lightState, progress * this.lightTimeline.getTotalDuration());
+      }
+    }
+    
     if (this.onPathUpdated) {
       this.onPathUpdated(keyframe, this._pathTime, totalDuration);
     }
@@ -895,6 +911,37 @@ export class TerrainEngine {
   exportPathKeyframes() {
     if (!this.currentPath) return null;
     return JSON.stringify(this.currentPath.toJSON(), null, 2);
+  }
+  
+  setPathLightingSync(enabled, mode = 'progress') {
+    this.syncLightingWithPath = enabled;
+    this.pathLightingSyncMode = mode;
+  }
+  
+  getPathLightingSync() {
+    return {
+      enabled: this.syncLightingWithPath,
+      mode: this.pathLightingSyncMode
+    };
+  }
+  
+  isPathPlaying() {
+    return this.isPathPlaying;
+  }
+  
+  getPathProgress() {
+    if (!this.currentPath) return 0;
+    const totalDuration = this.currentPath.getTotalDuration();
+    return totalDuration > 0 ? (this._pathTime || 0) / totalDuration : 0;
+  }
+  
+  getPathTime() {
+    return this._pathTime || 0;
+  }
+  
+  getPathDuration() {
+    if (!this.currentPath) return 0;
+    return this.currentPath.getTotalDuration();
   }
   
   // ============ LightTimeline 相关方法 ============
