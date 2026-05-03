@@ -46,6 +46,8 @@ const App = () => {
   const [isPathPlaying, setIsPathPlaying] = useState(false);
   const [pathProgress, setPathProgress] = useState(0);
   const [pathKeyframeCount, setPathKeyframeCount] = useState(0);
+  const [syncLightingWithPath, setSyncLightingWithPath] = useState(true);
+  const [pathLoop, setPathLoop] = useState(true);
   
   // ============ 光照时间轴状态 ============
   const [lightPreset, setLightPreset] = useState(TimePreset.NOON);
@@ -85,6 +87,35 @@ const App = () => {
       }
     };
   }, []);
+  
+  useEffect(() => {
+    let animationFrameId = null;
+    
+    const updateProgress = () => {
+      if (engineRef.current && isPathPlaying) {
+        const progress = engineRef.current.getPathProgress();
+        setPathProgress(progress);
+        
+        if (syncLightingWithPath) {
+          setTimelineProgress(progress);
+        }
+      }
+      
+      if (isPathPlaying) {
+        animationFrameId = requestAnimationFrame(updateProgress);
+      }
+    };
+    
+    if (isPathPlaying) {
+      animationFrameId = requestAnimationFrame(updateProgress);
+    }
+    
+    return () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, [isPathPlaying, syncLightingWithPath]);
   
   const showNotification = useCallback((message, type = 'success') => {
     if (notificationTimerRef.current) {
@@ -542,13 +573,20 @@ const App = () => {
       engineRef.current.pausePath();
       setIsPathPlaying(false);
     } else {
+      const currentPath = engineRef.current.getCurrentPath();
+      if (currentPath) {
+        currentPath.loop = pathLoop;
+      }
+      
+      engineRef.current.setPathLightingSync(syncLightingWithPath);
+      
       const success = engineRef.current.playPath();
       setIsPathPlaying(success);
       if (!success) {
         showNotification('请先生成相机路径', 'warning');
       }
     }
-  }, [isPathPlaying, showNotification]);
+  }, [isPathPlaying, syncLightingWithPath, pathLoop, showNotification]);
   
   const stopCameraPath = useCallback(() => {
     if (engineRef.current) {
@@ -1382,6 +1420,27 @@ const App = () => {
                     >
                       ⏹️
                     </button>
+                  </div>
+                  
+                  <div className="form-group" style={{ marginTop: 12 }}>
+                    <div className="checkbox-container">
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={syncLightingWithPath}
+                          onChange={(e) => setSyncLightingWithPath(e.target.checked)}
+                        />
+                        <span>同步光照时间轴</span>
+                      </label>
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          checked={pathLoop}
+                          onChange={(e) => setPathLoop(e.target.checked)}
+                        />
+                        <span>循环播放</span>
+                      </label>
+                    </div>
                   </div>
                   
                   {pathKeyframeCount > 0 && (

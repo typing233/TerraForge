@@ -207,11 +207,15 @@ export class TerrainRenderer {
   updateTerrainColors(biomeSystem) {
     if (!biomeSystem || !this.terrainMesh) return;
     
-    const canvas = biomeSystem.getCanvas();
-    if (!canvas) return;
+    const colorCanvas = biomeSystem.getColorCanvas();
+    if (!colorCanvas) return;
     
-    const biomeTexture = new THREE.CanvasTexture(canvas);
+    const biomeTexture = new THREE.CanvasTexture(colorCanvas);
     biomeTexture.needsUpdate = true;
+    biomeTexture.wrapS = THREE.ClampToEdgeWrapping;
+    biomeTexture.wrapT = THREE.ClampToEdgeWrapping;
+    biomeTexture.minFilter = THREE.LinearFilter;
+    biomeTexture.magFilter = THREE.LinearFilter;
     
     if (!this.biomeMaterial) {
       this.biomeMaterial = new THREE.MeshStandardMaterial({
@@ -220,16 +224,18 @@ export class TerrainRenderer {
         metalness: 0.0
       });
     } else {
+      if (this.biomeMaterial.map) {
+        this.biomeMaterial.map.dispose();
+      }
       this.biomeMaterial.map = biomeTexture;
       this.biomeMaterial.needsUpdate = true;
     }
     
     this.useBiomeColors = true;
+    this.renderMode = RenderMode.BIOME;
     
-    if (this.renderMode === RenderMode.SOLID || this.renderMode === RenderMode.BIOME) {
-      this.terrainMesh.material = this.biomeMaterial;
-      this.terrainMesh.material.needsUpdate = true;
-    }
+    this.terrainMesh.material = this.biomeMaterial;
+    this.terrainMesh.material.needsUpdate = true;
   }
   
   // ============ 相机路径方法 ============
@@ -617,8 +623,19 @@ export class TerrainRenderer {
       case RenderMode.HEATMAP:
         this.terrainMesh.material = this.heatmapMaterial;
         break;
+      case RenderMode.BIOME:
+        if (this.biomeMaterial) {
+          this.terrainMesh.material = this.biomeMaterial;
+        } else {
+          this.terrainMesh.material = this.terrainMaterial;
+        }
+        break;
       default:
-        this.terrainMesh.material = this.terrainMaterial;
+        if (this.useBiomeColors && this.biomeMaterial) {
+          this.terrainMesh.material = this.biomeMaterial;
+        } else {
+          this.terrainMesh.material = this.terrainMaterial;
+        }
     }
   }
   
